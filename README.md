@@ -1,4 +1,4 @@
-# Break Tracker Enterprise
+# Enterprise Employee Productivity Monitoring System
 
 > A Python-based desktop application for employee productivity monitoring, automatic idle detection, break tracking, and report generation.
 
