@@ -1,0 +1,18 @@
+{
+    "employee": {
+        "name": "Jaleel Ahamed",
+        "employee_id": "152",
+        "department": "IT",
+        "designation": "IT Support Engineer"
+    },
+    "settings": {
+        "idle_threshold": 3,
+        "allowed_break_minutes": 60,
+        "auto_start": true,
+        "minimize_to_tray": true
+    },
+    "application": {
+        "registered": true,
+        "version": "1.0.0-alpha"
+    }
+}
