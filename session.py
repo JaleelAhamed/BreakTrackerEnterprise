@@ -30,7 +30,6 @@ Python: 3.13
 
 from __future__ import annotations
 
-import logging
 import tkinter as tk
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -40,11 +39,9 @@ from typing import Callable, Optional
 from employee import ConfigManager, Employee
 from idle_detector import BreakLog, IdleTrackingController
 from report_generator import generate_session_report
+from logger import get_logger
 
-# A shared logger module will be configured elsewhere in the
-# application (handlers/formatters/levels). This module only emits
-# log records against its own named logger.
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -320,7 +317,11 @@ class SessionTimerWindow:
         self._status_var.set(
             f"Working - {display_name}" if display_name else "Working"
         )
-        logger.info("Employee login: %s", display_name or "<unknown>")
+        logger.info(
+            "Session started for %s at %s",
+            display_name or "<unknown>",
+            self._manager.session.login_time,
+        )
 
         self._timer_running = True
         self._schedule_next_tick()
@@ -436,6 +437,11 @@ class SessionTimerWindow:
         break_log = self._get_break_log()
         allowed_break_minutes = self._get_allowed_break_minutes()
 
+        logger.info(
+            "Report generation started for %s",
+            self._employee.name if self._employee else "<unknown>",
+        )
+
         try:
             report_path = generate_session_report(
                 employee=self._employee,
@@ -443,12 +449,12 @@ class SessionTimerWindow:
                 break_log=break_log,
                 allowed_break_minutes=allowed_break_minutes,
             )
-            logger.info("Report generated: %s", report_path)
+            logger.info("Report generation completed: %s", report_path)
             messagebox.showinfo(
                 "Report Generated", f"Session report saved to:\n{report_path}"
             )
         except Exception as exc:
-            logger.error("Report generation failed: %s", exc)
+            logger.exception("Report generation failed")
             messagebox.showerror(
                 "Report Generation Failed",
                 f"The session report could not be generated:\n{exc}",
@@ -461,13 +467,18 @@ class SessionTimerWindow:
         End the session, stop idle monitoring, freeze the timer,
         generate the report, and notify the caller.
         """
+        logger.info(
+            "Logout requested for %s",
+            self._manager.session.employee_display_name or "<unknown>",
+        )
+
         self._cancel_timer()
         self._stop_idle_detection()
 
         completed_session = self._manager.end_session()
         self._update_timer_display()  # Show final frozen duration.
         logger.info(
-            "Employee logout: %s",
+            "Session ended for %s",
             completed_session.employee_display_name or "<unknown>",
         )
 

@@ -47,6 +47,10 @@ from employee import (
 
 from session import launch_session_window
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class BreakTrackerApplication:
     """Coordinates the overall application startup."""
@@ -61,6 +65,8 @@ class BreakTrackerApplication:
         """
         Start Break Tracker Enterprise.
         """
+
+        logger.info("Application started")
 
         try:
             self.config_manager.ensure_config_exists()
@@ -81,7 +87,13 @@ class BreakTrackerApplication:
             # once the Session window destroys the root at logout.
             self.root.mainloop()
 
+            # mainloop() only returns once the shared root has been
+            # destroyed (i.e. at logout), so reaching this line means
+            # the application is shutting down normally.
+            logger.info("Application closed")
+
         except Exception as exc:
+            logger.exception("Unhandled exception during application startup")
             self._show_error(
                 "Startup Error",
                 f"Unable to start Break Tracker Enterprise.\n\n{exc}",
@@ -108,6 +120,7 @@ class BreakTrackerApplication:
             )
 
         except Exception as exc:
+            logger.exception("Unhandled exception while starting the employee session")
             self._show_error(
                 "Session Error",
                 f"Unable to start the employee session.\n\n{exc}",

@@ -29,6 +29,10 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Any, Callable, Optional
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
@@ -134,12 +138,17 @@ class ConfigManager:
         try:
             if not self._config_path.exists():
                 self._write(DEFAULT_CONFIG)
+                logger.info(
+                    "Configuration loaded (defaults created): %s", self._config_path
+                )
                 return json.loads(json.dumps(DEFAULT_CONFIG))
 
             with self._config_path.open("r", encoding="utf-8") as handle:
                 data: dict[str, Any] = json.load(handle)
 
-            return self._merge_with_defaults(data)
+            merged = self._merge_with_defaults(data)
+            logger.info("Configuration loaded: %s", self._config_path)
+            return merged
 
         except (OSError, json.JSONDecodeError) as exc:
             # Corrupted or unreadable file: fall back to defaults rather
@@ -150,7 +159,9 @@ class ConfigManager:
         """Persist the given configuration dict to disk."""
         try:
             self._write(data)
+            logger.info("Configuration saved: %s", self._config_path)
         except OSError as exc:
+            logger.exception("Failed to save configuration: %s", self._config_path)
             raise ConfigError(f"Unable to save configuration: {exc}") from exc
 
     def is_registered(self) -> bool:
@@ -164,7 +175,9 @@ class ConfigManager:
     def load_employee(self) -> Employee:
         """Load and return the stored Employee profile."""
         data = self.load()
-        return Employee.from_dict(data.get("employee", {}))
+        employee = Employee.from_dict(data.get("employee", {}))
+        logger.info("Employee profile loaded: %s (%s)", employee.name, employee.employee_id)
+        return employee
 
     def save_employee(self, employee: Employee) -> None:
         """
@@ -227,7 +240,9 @@ def validate_employee_fields(
 
     for field_label, value in fields.items():
         if not value or not value.strip():
-            return f"{field_label} is mandatory and cannot be empty."
+            error_message = f"{field_label} is mandatory and cannot be empty."
+            logger.warning("Validation error: %s", error_message)
+            return error_message
 
     return None
 
@@ -381,8 +396,14 @@ class RegistrationWindow:
         try:
             self._config_manager.save_employee(employee)
         except ConfigError as exc:
+            logger.exception("Employee registration failed while saving configuration")
             messagebox.showerror("Configuration Error", str(exc))
             return
+
+        logger.info(
+            "Employee registered: %s (%s), %s / %s",
+            employee.name, employee.employee_id, employee.department, employee.designation,
+        )
 
         # Tear down this window's own UI *before* invoking the
         # callback. Previously the callback fired first, which (via
@@ -519,6 +540,10 @@ class LoginWindow:
         # callback - see RegistrationWindow._handle_save for why this
         # ordering (and never opening a second Tk root) is what fixes
         # the leftover taskbar window / TclError-on-close problems.
+        logger.info(
+            "Employee login successful: %s (%s)",
+            self._employee.name, self._employee.employee_id,
+        )
         self._teardown()
 
         if self._on_login:

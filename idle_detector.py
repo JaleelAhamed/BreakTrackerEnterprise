@@ -41,6 +41,10 @@ except ImportError as exc:  # pragma: no cover - environment guard
         "Install it with: pip install pynput"
     ) from exc
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
@@ -235,6 +239,10 @@ class IdleDetector:
             # threshold is crossed), but guard defensively regardless.
             return None
 
+        logger.info(
+            "Break ended at %s; break duration %s", idle_end, idle_duration
+        )
+
         return BreakEvent(start_time=idle_start, end_time=idle_end, duration=idle_duration)
 
     def _handle_no_new_activity(self, now: datetime, current_activity: datetime) -> None:
@@ -246,6 +254,7 @@ class IdleDetector:
         if idle_duration >= self._idle_threshold:
             self._is_idle = True
             self._idle_start = current_activity
+            logger.info("Idle detected; break started at %s", current_activity)
 
 
 # --------------------------------------------------------------------------- #
@@ -370,6 +379,7 @@ class BreakReasonDialog:
 
     def _handle_confirm(self) -> None:
         self._break_event.reason = self._reason_var.get()
+        logger.info("Break reason submitted: %s", self._break_event.reason)
         self._on_reason_selected(self._break_event)
         self._window.grab_release()
         self._window.destroy()
@@ -443,6 +453,10 @@ class IdleTrackingController:
             self._prompt_for_reason(break_event)
 
     def _prompt_for_reason(self, break_event: BreakEvent) -> None:
+        logger.info(
+            "Idle popup displayed for break duration %s",
+            break_event.formatted_duration(),
+        )
         BreakReasonDialog(
             parent=self._root,
             break_event=break_event,

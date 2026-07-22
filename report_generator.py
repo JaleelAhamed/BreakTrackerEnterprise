@@ -25,6 +25,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ======================================================================
 # Design tokens
@@ -480,60 +484,74 @@ def generate_session_report(
     This function is the public API used by ``session.py`` and must keep
     this exact signature and return type.
     """
-    session_duration: timedelta = session.duration()
-    total_break: timedelta = break_log.total_duration()
+    employee_name = getattr(employee, "name", "<unknown>")
+    logger.info("Report generation started for employee: %s", employee_name)
 
-    productive_time = session_duration - total_break
-    if productive_time.total_seconds() < 0:
-        productive_time = timedelta(0)
+    try:
+        session_duration: timedelta = session.duration()
+        total_break: timedelta = break_log.total_duration()
 
-    exceeded_minutes = max(
-        0,
-        int(total_break.total_seconds() // 60) - allowed_break_minutes,
-    )
-    exceeded = exceeded_minutes > 0
+        productive_time = session_duration - total_break
+        if productive_time.total_seconds() < 0:
+            productive_time = timedelta(0)
 
-    generator = ExcelReportGenerator()
+        exceeded_minutes = max(
+            0,
+            int(total_break.total_seconds() // 60) - allowed_break_minutes,
+        )
+        exceeded = exceeded_minutes > 0
 
-    generator.create_report_title()
+        generator = ExcelReportGenerator()
 
-    generator.add_employee_information(
-        employee=employee,
-        report_date=datetime.now(),
-    )
+        generator.create_report_title()
 
-    generator.add_session_summary(
-        login_time=session.login_time,
-        logout_time=session.logout_time,
-        session_duration=session_duration,
-        productive_time=productive_time,
-    )
+        generator.add_employee_information(
+            employee=employee,
+            report_date=datetime.now(),
+        )
 
-    generator.add_break_summary(
-        total_break=total_break,
-        allowed_break_minutes=allowed_break_minutes,
-        exceeded_minutes=exceeded_minutes,
-        exceeded=exceeded,
-    )
+        generator.add_session_summary(
+            login_time=session.login_time,
+            logout_time=session.logout_time,
+            session_duration=session_duration,
+            productive_time=productive_time,
+        )
 
-    generator.add_break_details(break_log.breaks)
+        generator.add_break_summary(
+            total_break=total_break,
+            allowed_break_minutes=allowed_break_minutes,
+            exceeded_minutes=exceeded_minutes,
+            exceeded=exceeded,
+        )
 
-    productivity = generator.add_statistics(
-        session_duration=session_duration,
-        productive_time=productive_time,
-        total_break=total_break,
-        break_events=break_log.breaks,
-    )
+        generator.add_break_details(break_log.breaks)
 
-    generator.add_remarks(productivity=productivity, exceeded=exceeded)
+        productivity = generator.add_statistics(
+            session_duration=session_duration,
+            productive_time=productive_time,
+            total_break=total_break,
+            break_events=break_log.breaks,
+        )
 
-    generator.add_footer()
+        generator.add_remarks(productivity=productivity, exceeded=exceeded)
 
-    reports_folder = Path(__file__).parent / "reports"
-    reports_folder.mkdir(exist_ok=True)
+        generator.add_footer()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = _resolve_report_filename(employee, timestamp)
-    report_path = reports_folder / filename
+        logger.info("Employee report created for: %s", employee_name)
 
-    return generator.save(report_path)
+        reports_folder = Path(__file__).parent / "reports"
+        reports_folder.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = _resolve_report_filename(employee, timestamp)
+        report_path = reports_folder / filename
+
+        saved_path = generator.save(report_path)
+        logger.info("Excel file saved: %s", saved_path)
+        logger.info("Report path: %s", saved_path)
+
+        return saved_path
+
+    except Exception:
+        logger.exception("Report generation failed for employee: %s", employee_name)
+        raise
