@@ -271,6 +271,11 @@ class BreakReasonDialog:
     Modal popup shown when activity resumes after a qualifying idle
     period. Displays the break start/end time and total duration, and
     asks the employee to select a reason before the dialog can close.
+
+    The dialog also guarantees it is actually seen: since it appears the
+    moment the employee returns, it forces itself to the front and takes
+    focus rather than relying on the employee to notice it (see
+    `_bring_to_front`).
     """
 
     WINDOW_WIDTH: int = 380
@@ -298,6 +303,22 @@ class BreakReasonDialog:
         self._reason_var = tk.StringVar(value=BREAK_REASONS[0])
 
         self._build_ui()
+        self._bring_to_front()
+
+    def _bring_to_front(self) -> None:
+        """
+        Ensure the popup is immediately visible and focused.
+
+        The employee has typically just returned from being away, so the
+        dialog must not be left sitting in the taskbar or behind other
+        windows: it is raised, given input focus, and briefly pinned
+        above all other windows just long enough to guarantee it is
+        actually seen before that pin is released.
+        """
+        self._window.lift()
+        self._window.focus_force()
+        self._window.attributes("-topmost", True)
+        self._window.after(100, lambda: self._window.attributes("-topmost", False))
 
     def _build_ui(self) -> None:
         container = tk.Frame(self._window, padx=25, pady=20)
