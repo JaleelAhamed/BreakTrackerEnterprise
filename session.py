@@ -9,14 +9,20 @@ Responsibilities of this module (and only these):
     * Record logout time
     * Display a live working timer that updates every second
     * Calculate total session duration on logout
+    * Coordinate with idle_detector.py (start/stop idle monitoring,
+      retrieve the recorded BreakLog) and report_generator.py
+      (generate the logout report) via their existing public APIs.
 
-This module intentionally does NOT implement idle detection, report
-generation, dashboards, or any persistence beyond an in-memory
-WorkSession. Those concerns belong to other modules.
+This module intentionally does NOT implement idle detection logic,
+report-building logic, dashboards, or any persistence beyond an
+in-memory WorkSession. Those concerns belong to idle_detector.py,
+report_generator.py, and other modules. session.py is the coordinator:
+it depends on those modules, but neither of them depends back on it.
 
-No threads are used. The live timer relies exclusively on Tkinter's
-`after()` scheduling mechanism, which is safe to use on the main
-GUI thread.
+No manual threads are created in this module. The live timer relies
+exclusively on Tkinter's `after()` scheduling mechanism, which is safe
+to use on the main GUI thread. Idle monitoring is delegated entirely
+to idle_detector.py, which owns whatever background listening it needs.
 
 Author: Break Tracker Enterprise Team
 Python: 3.13
@@ -24,10 +30,21 @@ Python: 3.13
 
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from tkinter import messagebox
 from typing import Callable, Optional
+
+from employee import ConfigManager, Employee
+from idle_detector import BreakLog, IdleTrackingController
+from report_generator import generate_session_report
+
+# A shared logger module will be configured elsewhere in the
+# application (handlers/formatters/levels). This module only emits
+# log records against its own named logger.
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -35,6 +52,7 @@ from typing import Callable, Optional
 
 APP_TITLE: str = "Break Tracker Enterprise"
 TIMER_UPDATE_INTERVAL_MS: int = 1000  # 1 second
+DEFAULT_ALLOWED_BREAK_MINUTES: int = 60  # Fallback if config is unavailable.
 
 
 # --------------------------------------------------------------------------- #
@@ -175,11 +193,12 @@ class SessionTimerWindow:
     """
     Displays a live working timer and a Logout button.
 
-    The window starts a new session on construction and schedules a
-    self-repeating `after()` callback to refresh the elapsed-time
-    label every second. On Logout, the session is ended, the timer
-    is cancelled, and an optional callback is invoked with the
-    completed WorkSession.
+    The window starts a new session on construction (this is treated
+    as "login successful") and schedules a self-repeating `after()`
+    callback to refresh the elapsed-time label every second. On
+    Logout, the session is ended, the timer is cancelled, idle
+    monitoring is stopped, a report is generated, and an optional
+    callback is invoked with the completed WorkSession.
     """
 
     WINDOW_WIDTH: int = 360
@@ -190,29 +209,75 @@ class SessionTimerWindow:
         employee_display_name: str = "",
         on_logout: Optional[Callable[[WorkSession], None]] = None,
         session_manager: Optional[SessionManager] = None,
+        employee: Optional[Employee] = None,
+        config_manager: Optional[ConfigManager] = None,
+        root: Optional[tk.Tk] = None,
     ) -> None:
-        self._manager = session_manager or SessionManager(employee_display_name)
+        # `employee` (full profile) and `config_manager` are optional so
+        # existing callers that only pass a display name keep working
+        # unchanged; they are used for report generation when available.
+        self._employee = employee
+        self._config_manager = config_manager
+
+        display_name = employee_display_name or (employee.name if employee else "")
+        self._manager = session_manager or SessionManager(display_name)
         self._on_logout = on_logout
 
         # Holds the identifier returned by `after()` so it can be
         # cancelled cleanly on logout or window close.
         self._after_id: Optional[str] = None
 
-        self._root = tk.Tk()
+        # Explicit running flag so the tick loop can never be started
+        # twice (which would leave a stray after() chain updating
+        # nothing the user can see) and never keeps rescheduling
+        # itself after it should have stopped.
+        self._timer_running: bool = False
+
+        # Owns idle/break monitoring for the current session. Created on
+        # login, stopped on logout. IdleTrackingController is the real
+        # public entry point exposed by idle_detector.py; it internally
+        # owns the ActivityTracker/IdleDetector/BreakLog and the
+        # break-reason popup.
+        self._idle_detector: Optional[IdleTrackingController] = None
+
+        # This window normally reuses the single root created by
+        # main.py and already carrying the Employee login/registration
+        # UI - it does NOT open a second Tk() instance. Opening a
+        # second root (the previous behaviour) is what caused the
+        # live timer's StringVar/after() calls to bind unreliably
+        # across two competing Tk interpreters, and left the login
+        # window stuck alive until this one closed.
+        self._owns_root = root is None
+        self._root = root or tk.Tk()
+
+        # Defensive cleanup: if this root previously hosted another
+        # window's widgets, clear them before building the session UI,
+        # regardless of whether the caller already tore its own down.
+        for child in self._root.winfo_children():
+            child.destroy()
+
         _configure_fixed_window(
             self._root, self.WINDOW_WIDTH, self.WINDOW_HEIGHT, APP_TITLE
         )
         self._root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
 
-        self._timer_var = tk.StringVar(value="00:00:00")
-        self._status_var = tk.StringVar(value="")
+        self._timer_var = tk.StringVar(master=self._root, value="00:00:00")
+        self._status_var = tk.StringVar(master=self._root, value="")
 
         self._build_ui()
         self._start_session_and_timer()
 
     def run(self) -> None:
-        """Start the Tkinter event loop for this window."""
-        self._root.mainloop()
+        """
+        Start the Tkinter event loop for this window.
+
+        Only relevant for standalone usage where this window owns its
+        root. When integrated into the application flow via a shared
+        root, the caller (launch_session_window / main.py) owns the
+        single, already-running event loop.
+        """
+        if self._owns_root:
+            self._root.mainloop()
 
     # -- UI construction -------------------------------------------------- #
 
@@ -248,18 +313,24 @@ class SessionTimerWindow:
     # -- Session/timer control --------------------------------------------- #
 
     def _start_session_and_timer(self) -> None:
-        """Record login time and kick off the recurring timer update."""
+        """Record login time, kick off the timer, and start idle monitoring."""
         self._manager.start_session()
 
         display_name = self._manager.session.employee_display_name
         self._status_var.set(
             f"Working - {display_name}" if display_name else "Working"
         )
+        logger.info("Employee login: %s", display_name or "<unknown>")
 
+        self._timer_running = True
         self._schedule_next_tick()
+        self._start_idle_detection()
 
     def _schedule_next_tick(self) -> None:
         """Schedule the next timer refresh using Tkinter's after()."""
+        if not self._timer_running:
+            return  # Timer was stopped; do not reschedule.
+
         self._update_timer_display()
         self._after_id = self._root.after(
             TIMER_UPDATE_INTERVAL_MS, self._schedule_next_tick
@@ -272,33 +343,156 @@ class SessionTimerWindow:
 
     def _cancel_timer(self) -> None:
         """Cancel any pending after() callback, if one is scheduled."""
+        self._timer_running = False
         if self._after_id is not None:
             self._root.after_cancel(self._after_id)
             self._after_id = None
 
+    # -- Idle detection integration ---------------------------------------- #
+
+    def _start_idle_detection(self) -> None:
+        """
+        Create and start the IdleTrackingController for this session.
+
+        idle_detector.py owns all monitoring internals (including the
+        background pynput listeners); this call must not block the UI
+        thread - IdleTrackingController.start() only schedules an
+        after() poll and returns immediately.
+        """
+        try:
+            self._idle_detector = IdleTrackingController(self._root)
+            self._idle_detector.start()
+            logger.info(
+                "Idle detection started for %s",
+                self._manager.session.employee_display_name or "<unknown>",
+            )
+        except Exception as exc:  # Idle monitoring must never crash login.
+            logger.error("Failed to start idle detection: %s", exc)
+            messagebox.showerror(
+                "Idle Detection Error",
+                f"Idle monitoring could not be started:\n{exc}",
+            )
+
+    def _stop_idle_detection(self) -> None:
+        """Stop the IdleTrackingController cleanly, ensuring no listeners remain."""
+        if self._idle_detector is None:
+            return
+
+        try:
+            self._idle_detector.stop()
+            logger.info("Idle detection stopped.")
+        except Exception as exc:  # Logout must proceed regardless.
+            logger.error("Failed to stop idle detection cleanly: %s", exc)
+
+    def _get_break_log(self) -> BreakLog:
+        """
+        Retrieve the BreakLog recorded by the IdleTrackingController.
+
+        Returns an empty BreakLog if idle detection never started (or
+        failed to start), so report generation can proceed regardless.
+        """
+        if self._idle_detector is None:
+            return BreakLog()
+
+        try:
+            return self._idle_detector.break_log
+        except Exception as exc:
+            logger.error("Failed to retrieve break log: %s", exc)
+            return BreakLog()
+
+    def _get_allowed_break_minutes(self) -> int:
+        """Read the allowed break limit from config.json via ConfigManager."""
+        try:
+            config_manager = self._config_manager or ConfigManager()
+            config = config_manager.load()
+            return int(
+                config.get("settings", {}).get(
+                    "allowed_break_minutes", DEFAULT_ALLOWED_BREAK_MINUTES
+                )
+            )
+        except Exception as exc:
+            logger.error("Failed to load allowed break minutes from config: %s", exc)
+            return DEFAULT_ALLOWED_BREAK_MINUTES
+
+    # -- Report generation integration -------------------------------------- #
+
+    def _generate_logout_report(self, completed_session: WorkSession) -> None:
+        """
+        Build the logout report via report_generator.py's existing API
+        and inform the employee of the outcome. Failures here must
+        never crash the application.
+        """
+        if self._employee is None:
+            # generate_session_report requires an Employee (for name,
+            # ID, department, designation, and the report file name).
+            logger.error("Cannot generate report: no Employee profile available.")
+            messagebox.showerror(
+                "Report Generation Failed",
+                "The session report could not be generated because no "
+                "employee profile was supplied to this session.",
+            )
+            return
+
+        break_log = self._get_break_log()
+        allowed_break_minutes = self._get_allowed_break_minutes()
+
+        try:
+            report_path = generate_session_report(
+                employee=self._employee,
+                session=completed_session,
+                break_log=break_log,
+                allowed_break_minutes=allowed_break_minutes,
+            )
+            logger.info("Report generated: %s", report_path)
+            messagebox.showinfo(
+                "Report Generated", f"Session report saved to:\n{report_path}"
+            )
+        except Exception as exc:
+            logger.error("Report generation failed: %s", exc)
+            messagebox.showerror(
+                "Report Generation Failed",
+                f"The session report could not be generated:\n{exc}",
+            )
+
     # -- Event handlers ---------------------------------------------------- #
 
     def _handle_logout(self) -> None:
-        """End the session, freeze the timer, and notify the caller."""
+        """
+        End the session, stop idle monitoring, freeze the timer,
+        generate the report, and notify the caller.
+        """
         self._cancel_timer()
+        self._stop_idle_detection()
 
         completed_session = self._manager.end_session()
         self._update_timer_display()  # Show final frozen duration.
+        logger.info(
+            "Employee logout: %s",
+            completed_session.employee_display_name or "<unknown>",
+        )
+
+        self._generate_logout_report(completed_session)
 
         if self._on_logout:
             self._on_logout(completed_session)
 
+        # Session is always the last screen in the application flow,
+        # so it destroys the root outright (whether or not it created
+        # it) - this is what lets the single running mainloop() return
+        # and the application exit cleanly with no windows left behind.
         self._root.destroy()
 
     def _handle_window_close(self) -> None:
         """
         Treat closing the window (e.g. the OS close button) the same
-        as an explicit logout, so a session is never left dangling.
+        as an explicit logout, so a session is never left dangling and
+        idle monitoring never keeps running unattended.
         """
         if self._manager.session.is_active():
             self._handle_logout()
         else:
             self._cancel_timer()
+            self._stop_idle_detection()
             self._root.destroy()
 
 
@@ -309,16 +503,38 @@ class SessionTimerWindow:
 def launch_session_window(
     employee_display_name: str = "",
     on_logout: Optional[Callable[[WorkSession], None]] = None,
+    employee: Optional[Employee] = None,
+    config_manager: Optional[ConfigManager] = None,
+    root: Optional[tk.Tk] = None,
 ) -> None:
     """
     Launch the live session timer window for the given employee.
 
     This is the single public entry point other modules should call
     to start tracking a work session and display the live timer.
+
+    `root` is optional and defaults to None for backward compatibility:
+    - If omitted, this function creates its own Tk() root and blocks
+      here in mainloop() until logout (unchanged standalone behaviour).
+    - If the caller supplies a root (as main.py now does, so the whole
+      application stays on a single Tk root across the login -> session
+      transition), the session UI is built on that root and this
+      function returns immediately; the caller's own mainloop() -
+      already running - continues to drive it.
     """
-    SessionTimerWindow(
-        employee_display_name=employee_display_name, on_logout=on_logout
-    ).run()
+    owns_root = root is None
+    active_root = root or tk.Tk()
+
+    window = SessionTimerWindow(
+        employee_display_name=employee_display_name,
+        on_logout=on_logout,
+        employee=employee,
+        config_manager=config_manager,
+        root=active_root,
+    )
+
+    if owns_root:
+        window.run()
 
 
 if __name__ == "__main__":

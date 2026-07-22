@@ -272,31 +272,50 @@ class RegistrationWindow:
         self,
         config_manager: ConfigManager,
         on_complete: Optional[Callable[[Employee], None]] = None,
+        root: Optional[tk.Tk] = None,
     ) -> None:
         self._config_manager = config_manager
         self._on_complete = on_complete
 
-        self._root = tk.Tk()
+        # If a root is supplied (the normal case, coming from
+        # launch_employee_flow as part of the single-root application
+        # flow), this window borrows it rather than creating a second
+        # Tk() instance. It only owns/destroys the root itself when it
+        # created it (e.g. standalone/direct usage of this class).
+        self._owns_root = root is None
+        self._root = root or tk.Tk()
         _configure_fixed_window(
             self._root, self.WINDOW_WIDTH, self.WINDOW_HEIGHT, APP_TITLE
         )
 
-        self._name_var = tk.StringVar()
-        self._employee_id_var = tk.StringVar()
-        self._department_var = tk.StringVar()
-        self._designation_var = tk.StringVar()
+        self._name_var = tk.StringVar(master=self._root)
+        self._employee_id_var = tk.StringVar(master=self._root)
+        self._department_var = tk.StringVar(master=self._root)
+        self._designation_var = tk.StringVar(master=self._root)
+
+        # Tracked so this window's widgets can be torn down without
+        # destroying a shared root (the next window reuses it).
+        self._container: Optional[tk.Frame] = None
 
         self._build_ui()
 
     def run(self) -> None:
-        """Start the Tkinter event loop for this window."""
-        self._root.mainloop()
+        """
+        Start the Tkinter event loop for this window.
+
+        Only relevant for standalone usage where this window owns its
+        root. When integrated into the application flow via a shared
+        root, the caller (launch_employee_flow) owns the event loop.
+        """
+        if self._owns_root:
+            self._root.mainloop()
 
     # -- UI construction -------------------------------------------------- #
 
     def _build_ui(self) -> None:
         container = tk.Frame(self._root, padx=30, pady=20)
         container.pack(fill="both", expand=True)
+        self._container = container
 
         title_label = tk.Label(
             container, text=APP_TITLE, font=("Segoe UI", 16, "bold")
@@ -365,10 +384,33 @@ class RegistrationWindow:
             messagebox.showerror("Configuration Error", str(exc))
             return
 
+        # Tear down this window's own UI *before* invoking the
+        # callback. Previously the callback fired first, which (via
+        # main.py) built and ran a second window/mainloop while this
+        # one was still alive - leaving it stuck in the taskbar and,
+        # on close, raising "application has been destroyed". Clearing
+        # this window first (and never opening a second Tk root) means
+        # the callback can safely build the next screen on the same
+        # root with no nested event loop involved.
+        self._teardown()
+
         if self._on_complete:
             self._on_complete(employee)
 
-        self._root.destroy()
+    def _teardown(self) -> None:
+        """
+        Remove this window from view.
+
+        If this window owns its root (standalone usage), the root is
+        destroyed outright, matching the original behaviour. If it is
+        sharing a root supplied by the caller, only its own widgets are
+        removed so the shared root is left ready for the next window.
+        """
+        if self._owns_root:
+            self._root.destroy()
+        elif self._container is not None:
+            self._container.destroy()
+            self._container = None
 
 
 # --------------------------------------------------------------------------- #
@@ -390,27 +432,44 @@ class LoginWindow:
         self,
         config_manager: ConfigManager,
         on_login: Optional[Callable[[Employee], None]] = None,
+        root: Optional[tk.Tk] = None,
     ) -> None:
         self._config_manager = config_manager
         self._on_login = on_login
         self._employee: Employee = config_manager.load_employee()
 
-        self._root = tk.Tk()
+        # See RegistrationWindow for why root ownership is tracked:
+        # this lets the window share the application's single root
+        # instead of opening a second Tk() instance.
+        self._owns_root = root is None
+        self._root = root or tk.Tk()
         _configure_fixed_window(
             self._root, self.WINDOW_WIDTH, self.WINDOW_HEIGHT, APP_TITLE
         )
 
+        # Tracked so this window's widgets can be torn down without
+        # destroying a shared root (the session window reuses it).
+        self._container: Optional[tk.Frame] = None
+
         self._build_ui()
 
     def run(self) -> None:
-        """Start the Tkinter event loop for this window."""
-        self._root.mainloop()
+        """
+        Start the Tkinter event loop for this window.
+
+        Only relevant for standalone usage where this window owns its
+        root. When integrated into the application flow via a shared
+        root, the caller (launch_employee_flow) owns the event loop.
+        """
+        if self._owns_root:
+            self._root.mainloop()
 
     # -- UI construction -------------------------------------------------- #
 
     def _build_ui(self) -> None:
         container = tk.Frame(self._root, padx=30, pady=20)
         container.pack(fill="both", expand=True)
+        self._container = container
 
         title_label = tk.Label(
             container, text=APP_TITLE, font=("Segoe UI", 16, "bold")
@@ -456,9 +515,29 @@ class LoginWindow:
     # -- Event handlers ---------------------------------------------------- #
 
     def _handle_login(self) -> None:
+        # Tear down this window's own UI *before* invoking the
+        # callback - see RegistrationWindow._handle_save for why this
+        # ordering (and never opening a second Tk root) is what fixes
+        # the leftover taskbar window / TclError-on-close problems.
+        self._teardown()
+
         if self._on_login:
             self._on_login(self._employee)
-        self._root.destroy()
+
+    def _teardown(self) -> None:
+        """
+        Remove this window from view.
+
+        If this window owns its root (standalone usage), the root is
+        destroyed outright, matching the original behaviour. If it is
+        sharing a root supplied by the caller, only its own widgets are
+        removed so the shared root is left ready for the next window.
+        """
+        if self._owns_root:
+            self._root.destroy()
+        elif self._container is not None:
+            self._container.destroy()
+            self._container = None
 
 
 # --------------------------------------------------------------------------- #
@@ -469,6 +548,7 @@ def launch_employee_flow(
     config_manager: Optional[ConfigManager] = None,
     on_registered: Optional[Callable[[Employee], None]] = None,
     on_login: Optional[Callable[[Employee], None]] = None,
+    root: Optional[tk.Tk] = None,
 ) -> None:
     """
     Launch either the Registration or Login window, whichever is
@@ -476,14 +556,29 @@ def launch_employee_flow(
 
     This is the single public entry point other modules should call to
     handle the employee identity portion of application startup.
+
+    `root` is optional and defaults to None for backward compatibility:
+    - If omitted, this function creates and owns its own Tk() root and
+      blocks here in mainloop() until that window closes (unchanged
+      standalone behaviour).
+    - If the caller supplies a root (as main.py now does, to keep the
+      whole application on a single Tk root), this function builds the
+      window on that root and returns immediately without blocking;
+      the caller is responsible for running mainloop() itself.
     """
     manager = config_manager or ConfigManager()
     manager.ensure_config_exists()
 
+    owns_root = root is None
+    active_root = root or tk.Tk()
+
     if manager.is_registered():
-        LoginWindow(manager, on_login=on_login).run()
+        LoginWindow(manager, on_login=on_login, root=active_root)
     else:
-        RegistrationWindow(manager, on_complete=on_registered).run()
+        RegistrationWindow(manager, on_complete=on_registered, root=active_root)
+
+    if owns_root:
+        active_root.mainloop()
 
 
 if __name__ == "__main__":
