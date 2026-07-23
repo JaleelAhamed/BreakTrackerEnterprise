@@ -30,6 +30,7 @@ from tkinter import messagebox
 from typing import Any, Callable, Optional
 
 from logger import get_logger
+from settings import SettingsWindow
 
 logger = get_logger(__name__)
 
@@ -268,6 +269,56 @@ def _configure_fixed_window(window: tk.Tk | tk.Toplevel, width: int, height: int
     _center_window(window, width, height)
 
 
+class _ToolTip:
+    """
+    Minimal, dependency-free tooltip for a single widget.
+
+    Built entirely on the standard library (tkinter): a small,
+    borderless Toplevel is shown near the widget on hover and
+    destroyed again as soon as the pointer leaves. No external
+    packages are required.
+    """
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip_window: Optional[tk.Toplevel] = None
+
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event: tk.Event) -> None:
+        """Display the tooltip below the widget, unless already shown."""
+        if self._tip_window is not None:
+            return
+
+        x = self._widget.winfo_rootx() + (self._widget.winfo_width() // 2)
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 6
+
+        self._tip_window = tk.Toplevel(self._widget)
+        self._tip_window.wm_overrideredirect(True)
+        self._tip_window.wm_geometry(f"+{x}+{y}")
+
+        label = tk.Label(
+            self._tip_window,
+            text=self._text,
+            background="#333333",
+            foreground="#ffffff",
+            font=("Segoe UI", 8),
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+        )
+        label.pack()
+
+    def _hide(self, _event: tk.Event) -> None:
+        """Destroy the tooltip window, if one is currently showing."""
+        if self._tip_window is not None:
+            self._tip_window.destroy()
+            self._tip_window = None
+
+
 # --------------------------------------------------------------------------- #
 # Registration Window
 # --------------------------------------------------------------------------- #
@@ -472,6 +523,12 @@ class LoginWindow:
         # destroying a shared root (the session window reuses it).
         self._container: Optional[tk.Frame] = None
 
+        # Sprint 10 - Phase 1: at most one Settings window may be open
+        # at a time. This holds that instance (or None) so a second
+        # click on the gear button can focus the existing window
+        # instead of creating a duplicate.
+        self._settings_window: Optional[SettingsWindow] = None
+
         self._build_ui()
 
     def run(self) -> None:
@@ -491,6 +548,11 @@ class LoginWindow:
         container = tk.Frame(self._root, padx=30, pady=20)
         container.pack(fill="both", expand=True)
         self._container = container
+
+        # Floats over the window via `place` on the root itself (not
+        # packed inside `container`), so it never participates in the
+        # container's pack layout and cannot shift the existing rows.
+        self._add_settings_button()
 
         title_label = tk.Label(
             container, text=APP_TITLE, font=("Segoe UI", 16, "bold")
@@ -532,6 +594,71 @@ class LoginWindow:
 
         value_label = tk.Label(parent, text=value, anchor="w")
         value_label.grid(row=row, column=1, sticky="ew", pady=8)
+
+    def _add_settings_button(self) -> None:
+        """
+        Add a small Settings (gear) button to the top-right corner.
+
+        The button is parented directly to the root window and placed
+        with `place`, so it sits above the existing packed layout
+        without taking part in it - the login window's rows are laid
+        out exactly as before.
+        """
+        settings_button = tk.Button(
+            self._root,
+            text="\u2699",  # gear glyph
+            font=("Segoe UI", 11),
+            width=2,
+            relief="flat",
+            cursor="hand2",
+            command=self._open_settings_window,
+        )
+        settings_button.place(relx=1.0, x=-10, y=8, anchor="ne")
+
+        _ToolTip(settings_button, "Administrator Settings")
+
+    # -- Settings window (Sprint 10 - Phase 1) ----------------------------- #
+
+    def _open_settings_window(self) -> None:
+        """
+        Open the Settings window, or focus it if one is already open.
+
+        Only one Settings window may exist at a time. If this login
+        window already has one open, it is restored (if minimized),
+        raised above other windows, and given focus instead of a
+        second instance being created.
+        """
+        existing = self._settings_window
+        if existing is not None:
+            try:
+                if existing.root.winfo_exists():
+                    self._focus_settings_window(existing.root)
+                    return
+            except tk.TclError:
+                pass
+            self._settings_window = None
+
+        settings_window = SettingsWindow(master=self._root)
+        settings_window.root.bind(
+            "<Destroy>", self._handle_settings_window_closed, add="+"
+        )
+        self._settings_window = settings_window
+
+    @staticmethod
+    def _focus_settings_window(window: tk.Misc) -> None:
+        """Restore (if minimized), raise, and focus an existing window."""
+        if window.state() == "iconic":
+            window.deiconify()
+        window.lift()
+        window.focus_force()
+
+    def _handle_settings_window_closed(self, event: tk.Event) -> None:
+        """Clear the tracked Settings window once it has been destroyed."""
+        if (
+            self._settings_window is not None
+            and event.widget is self._settings_window.root
+        ):
+            self._settings_window = None
 
     # -- Event handlers ---------------------------------------------------- #
 
