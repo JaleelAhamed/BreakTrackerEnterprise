@@ -29,8 +29,8 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Any, Callable, Optional
 
+from admin_auth import AdministratorAuth
 from logger import get_logger
-from settings import SettingsWindow
 
 logger = get_logger(__name__)
 
@@ -523,11 +523,11 @@ class LoginWindow:
         # destroying a shared root (the session window reuses it).
         self._container: Optional[tk.Frame] = None
 
-        # Sprint 10 - Phase 1: at most one Settings window may be open
-        # at a time. This holds that instance (or None) so a second
-        # click on the gear button can focus the existing window
-        # instead of creating a duplicate.
-        self._settings_window: Optional[SettingsWindow] = None
+        # Sprint 10 - Phase 2: the Settings button no longer opens
+        # SettingsWindow directly. AdministratorAuth gates access
+        # behind a password prompt and also owns the "at most one
+        # Settings window open at a time" tracking (see admin_auth.py).
+        self._admin_auth = AdministratorAuth()
 
         self._build_ui()
 
@@ -621,44 +621,16 @@ class LoginWindow:
 
     def _open_settings_window(self) -> None:
         """
-        Open the Settings window, or focus it if one is already open.
+        Route the Settings (gear) button through administrator
+        authentication.
 
-        Only one Settings window may exist at a time. If this login
-        window already has one open, it is restored (if minimized),
-        raised above other windows, and given focus instead of a
-        second instance being created.
+        The employee is never given direct access to SettingsWindow:
+        AdministratorAuth displays the password dialog, verifies the
+        entered password, handles failed attempts/lockout, and only
+        then opens SettingsWindow (or focuses it if one is already
+        open - AdministratorAuth owns that single-instance tracking).
         """
-        existing = self._settings_window
-        if existing is not None:
-            try:
-                if existing.root.winfo_exists():
-                    self._focus_settings_window(existing.root)
-                    return
-            except tk.TclError:
-                pass
-            self._settings_window = None
-
-        settings_window = SettingsWindow(master=self._root)
-        settings_window.root.bind(
-            "<Destroy>", self._handle_settings_window_closed, add="+"
-        )
-        self._settings_window = settings_window
-
-    @staticmethod
-    def _focus_settings_window(window: tk.Misc) -> None:
-        """Restore (if minimized), raise, and focus an existing window."""
-        if window.state() == "iconic":
-            window.deiconify()
-        window.lift()
-        window.focus_force()
-
-    def _handle_settings_window_closed(self, event: tk.Event) -> None:
-        """Clear the tracked Settings window once it has been destroyed."""
-        if (
-            self._settings_window is not None
-            and event.widget is self._settings_window.root
-        ):
-            self._settings_window = None
+        self._admin_auth.open_admin_settings(self._root)
 
     # -- Event handlers ---------------------------------------------------- #
 

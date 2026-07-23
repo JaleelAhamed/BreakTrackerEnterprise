@@ -17,5 +17,10 @@
     "application": {
         "registered": true,
         "version": "1.0.0-alpha"
+    },
+    "admin": {
+        "admin_password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+        "max_admin_attempts": 3,
+        "admin_lockout_seconds": 30
     }
 }
