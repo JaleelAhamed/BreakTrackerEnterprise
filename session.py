@@ -12,17 +12,23 @@ Responsibilities of this module (and only these):
     * Coordinate with idle_detector.py (start/stop idle monitoring,
       retrieve the recorded BreakLog) and report_generator.py
       (generate the logout report) via their existing public APIs.
+    * Coordinate with tray_manager.py so the window can be minimized
+      to the system tray (instead of closed) and restored, logged out,
+      or exited from the tray menu.
 
 This module intentionally does NOT implement idle detection logic,
-report-building logic, dashboards, or any persistence beyond an
-in-memory WorkSession. Those concerns belong to idle_detector.py,
-report_generator.py, and other modules. session.py is the coordinator:
-it depends on those modules, but neither of them depends back on it.
+report-building logic, dashboards, tray-icon logic, or any persistence
+beyond an in-memory WorkSession. Those concerns belong to
+idle_detector.py, report_generator.py, tray_manager.py, and other
+modules. session.py is the coordinator: it depends on those modules,
+but none of them depends back on it.
 
 No manual threads are created in this module. The live timer relies
 exclusively on Tkinter's `after()` scheduling mechanism, which is safe
 to use on the main GUI thread. Idle monitoring is delegated entirely
 to idle_detector.py, which owns whatever background listening it needs.
+The system tray icon is delegated entirely to tray_manager.py, which
+owns its own background thread.
 
 Author: Break Tracker Enterprise Team
 Python: 3.13
@@ -39,6 +45,7 @@ from typing import Callable, Optional
 from employee import ConfigManager, Employee
 from idle_detector import BreakLog, IdleTrackingController
 from report_generator import generate_session_report
+from tray_manager import TrayManager
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -50,6 +57,9 @@ logger = get_logger(__name__)
 APP_TITLE: str = "Break Tracker Enterprise"
 TIMER_UPDATE_INTERVAL_MS: int = 1000  # 1 second
 DEFAULT_ALLOWED_BREAK_MINUTES: int = 60  # Fallback if config is unavailable.
+TRAY_BACKGROUND_NOTICE: str = (
+    "Break Tracker Enterprise is still running in the background."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +247,12 @@ class SessionTimerWindow:
         # break-reason popup.
         self._idle_detector: Optional[IdleTrackingController] = None
 
+        # Owns the system tray icon for this window. Created once,
+        # right after the window/session is up, and stopped on logout
+        # or exit. TrayManager owns its own background thread; this
+        # class only calls its public methods.
+        self._tray_manager: Optional[TrayManager] = None
+
         # This window normally reuses the single root created by
         # main.py and already carrying the Employee login/registration
         # UI - it does NOT open a second Tk() instance. Opening a
@@ -256,13 +272,18 @@ class SessionTimerWindow:
         _configure_fixed_window(
             self._root, self.WINDOW_WIDTH, self.WINDOW_HEIGHT, APP_TITLE
         )
-        self._root.protocol("WM_DELETE_WINDOW", self._handle_window_close)
+        # The OS close (X) button no longer ends the session - it
+        # minimizes the window to the system tray instead. Logout and
+        # Exit are performed explicitly, either from the in-window
+        # Logout button or from the tray menu.
+        self._root.protocol("WM_DELETE_WINDOW", self._handle_close_button)
 
         self._timer_var = tk.StringVar(master=self._root, value="00:00:00")
         self._status_var = tk.StringVar(master=self._root, value="")
 
         self._build_ui()
         self._start_session_and_timer()
+        self._start_tray_manager()
 
     def run(self) -> None:
         """
@@ -415,6 +436,70 @@ class SessionTimerWindow:
             logger.error("Failed to load allowed break minutes from config: %s", exc)
             return DEFAULT_ALLOWED_BREAK_MINUTES
 
+    # -- System tray integration --------------------------------------------- #
+
+    def _start_tray_manager(self) -> None:
+        """
+        Create and start the system tray icon.
+
+        This lets the window be minimized to the tray (via the close
+        button) instead of closed, and lets the employee log out or
+        exit from the tray menu. Tray failures are logged and must
+        never prevent the session itself from running - the app is
+        fully usable without a working tray icon.
+        """
+        try:
+            display_name = self._manager.session.employee_display_name
+            tooltip = f"{APP_TITLE} - {display_name}" if display_name else APP_TITLE
+
+            self._tray_manager = TrayManager(
+                root=self._root,
+                application_name=APP_TITLE,
+                tooltip=tooltip,
+                on_logout=self._handle_tray_logout,
+                on_exit=self._handle_tray_exit,
+            )
+            self._tray_manager.start()
+            logger.info("System tray started for %s", display_name or "<unknown>")
+        except Exception as exc:  # The tray must never crash the session.
+            logger.error("Failed to start the system tray icon: %s", exc)
+            self._tray_manager = None
+
+    def _stop_tray_manager(self) -> None:
+        """Stop the system tray icon cleanly, if it was started."""
+        if self._tray_manager is None:
+            return
+
+        try:
+            self._tray_manager.stop()
+            logger.info("System tray stopped.")
+        except Exception as exc:  # Logout/exit must proceed regardless.
+            logger.error("Failed to stop the system tray icon cleanly: %s", exc)
+
+    def _handle_tray_logout(self) -> None:
+        """
+        Invoked by the tray's "Logout" menu item. Performs exactly the
+        same logout process as the in-window Logout button - session
+        end, idle-detection stop, report generation, and shutdown.
+        """
+        logger.info("Logout selected from system tray.")
+        if self._manager.session.is_active():
+            self._handle_logout()
+
+    def _handle_tray_exit(self) -> None:
+        """
+        Invoked by the tray's "Exit" menu item. Performs a clean
+        shutdown: if a session is still active it is ended exactly
+        like a normal logout (so the report is still generated);
+        either way, the tray icon and application close afterwards.
+        """
+        logger.info("Exit selected from system tray.")
+        if self._manager.session.is_active():
+            self._handle_logout()
+        else:
+            self._stop_tray_manager()
+            self._root.destroy()
+
     # -- Report generation integration -------------------------------------- #
 
     def _generate_logout_report(self, completed_session: WorkSession) -> None:
@@ -474,6 +559,7 @@ class SessionTimerWindow:
 
         self._cancel_timer()
         self._stop_idle_detection()
+        self._stop_tray_manager()
 
         completed_session = self._manager.end_session()
         self._update_timer_display()  # Show final frozen duration.
@@ -495,16 +581,43 @@ class SessionTimerWindow:
 
     def _handle_window_close(self) -> None:
         """
-        Treat closing the window (e.g. the OS close button) the same
-        as an explicit logout, so a session is never left dangling and
-        idle monitoring never keeps running unattended.
+        Fallback behaviour if the system tray is unavailable: treat
+        closing the window the same as an explicit logout, so a
+        session is never left dangling and idle monitoring never keeps
+        running unattended with no way to reach it.
         """
         if self._manager.session.is_active():
             self._handle_logout()
         else:
             self._cancel_timer()
             self._stop_idle_detection()
+            self._stop_tray_manager()
             self._root.destroy()
+
+    def _handle_close_button(self) -> None:
+        """
+        Handle the window's OS close (X) button.
+
+        Per the tray-integration requirements, this must NOT end the
+        application: it hides the window to the system tray instead,
+        showing a notification, while the live timer, idle detection,
+        and break tracking all continue running exactly as before.
+        Logout and Exit remain available from the tray menu (or the
+        in-window Logout button, while the window is visible).
+        """
+        if self._tray_manager is None:
+            # No tray available - fall back to the previous behaviour
+            # rather than leaving the close button unresponsive.
+            logger.error(
+                "Close button pressed but no system tray is available; "
+                "falling back to logout-on-close."
+            )
+            self._handle_window_close()
+            return
+
+        logger.info("Close button pressed; minimizing to the system tray.")
+        self._tray_manager.hide_window()
+        self._tray_manager.show_notification(APP_TITLE, TRAY_BACKGROUND_NOTICE)
 
 
 # --------------------------------------------------------------------------- #
