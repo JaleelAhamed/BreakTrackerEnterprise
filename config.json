@@ -6,10 +6,13 @@
         "designation": "IT Support Engineer"
     },
     "settings": {
-        "idle_threshold": 3,
+        "idle_threshold": 1,
         "allowed_break_minutes": 60,
         "auto_start": true,
-        "minimize_to_tray": true
+        "minimize_to_tray": true,
+        "enable_notifications": true,
+        "report_folder": "reports",
+        "log_folder": "logs"
     },
     "application": {
         "registered": true,

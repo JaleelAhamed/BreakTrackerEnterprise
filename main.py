@@ -47,6 +47,19 @@ from employee import (
 
 from session import launch_session_window
 
+# Sprint 9 - Administrator Settings Integration
+#
+# SettingsWindow is imported here only so the main application
+# package is aware of the Settings module and its dependency stays
+# visible in this entry point. It is intentionally never instantiated
+# or shown from main.py: administrators launch it independently via
+# `python admin_settings.py` (see that file). Do not add a Settings
+# button, menu item, or tray option that opens it from here - the
+# employee workflow must remain exactly as it was before this
+# import was added. Administrator authentication for that standalone
+# launcher will be introduced in a future sprint.
+from settings import SettingsWindow  # noqa: F401  (see note above)
+
 from logger import get_logger
 
 logger = get_logger(__name__)
