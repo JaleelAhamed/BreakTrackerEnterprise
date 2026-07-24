@@ -382,7 +382,11 @@ class SessionTimerWindow:
         after() poll and returns immediately.
         """
         try:
-            self._idle_detector = IdleTrackingController(self._root)
+            idle_minutes = self._get_idle_threshold_minutes()
+            self._idle_detector = IdleTrackingController(
+                self._root,
+                idle_threshold=timedelta(minutes=idle_minutes),
+            )
             self._idle_detector.start()
             logger.info(
                 "Idle detection started for %s",
@@ -421,6 +425,16 @@ class SessionTimerWindow:
         except Exception as exc:
             logger.error("Failed to retrieve break log: %s", exc)
             return BreakLog()
+
+    def _get_idle_threshold_minutes(self) -> int:
+        """Read the idle timeout (minutes) from config.json via ConfigManager."""
+        try:
+            config_manager = self._config_manager or ConfigManager()
+            config = config_manager.load()
+            return int(config.get("settings", {}).get("idle_threshold", 3))
+        except Exception as exc:
+            logger.error("Failed to load idle threshold from config: %s", exc)
+            return 3
 
     def _get_allowed_break_minutes(self) -> int:
         """Read the allowed break limit from config.json via ConfigManager."""

@@ -24,12 +24,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
+from app_paths import LOGS_DIR
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-LOG_DIRECTORY = "logs"
 ARCHIVE_DIRECTORY = "archive"
 
 APPLICATION_LOG = "application.log"
@@ -74,9 +75,7 @@ class LoggingManager:
         if self.__class__._initialized:
             return
 
-        self.base_path = Path(__file__).parent
-
-        self.logs_path = self.base_path / LOG_DIRECTORY
+        self.logs_path = LOGS_DIR
 
         self.archive_path = self.logs_path / ARCHIVE_DIRECTORY
 

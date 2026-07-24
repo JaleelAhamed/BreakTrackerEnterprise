@@ -444,8 +444,12 @@ class IdleTrackingController:
     # -- internal helpers ---------------------------------------------- #
 
     def _schedule_next_poll(self) -> None:
-        self._poll_once()
-        self._after_id = self._root.after(self._poll_interval_ms, self._schedule_next_poll)
+        try:
+            self._poll_once()
+        except Exception:
+            logger.exception("Idle detection poll failed; continuing to poll.")
+        finally:
+            self._after_id = self._root.after(self._poll_interval_ms, self._schedule_next_poll)
 
     def _poll_once(self) -> None:
         break_event = self._detector.poll()

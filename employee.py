@@ -30,6 +30,7 @@ from tkinter import messagebox
 from typing import Any, Callable, Optional
 
 from admin_auth import AdministratorAuth
+from app_paths import CONFIG_PATH
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,8 +40,6 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 
 APP_TITLE: str = "Break Tracker Enterprise"
-CONFIG_FILE_NAME: str = "config.json"
-CONFIG_PATH: Path = Path(__file__).resolve().parent / CONFIG_FILE_NAME
 APP_VERSION: str = "1.0.0-alpha"
 
 # Default structure written to disk the first time the application runs.

@@ -25,6 +25,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from app_paths import REPORTS_DIR
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -667,8 +668,8 @@ def generate_session_report(
 
         logger.info("Employee report created for: %s", employee_name)
 
-        reports_folder = Path(__file__).parent / "reports"
-        reports_folder.mkdir(exist_ok=True)
+        reports_folder = REPORTS_DIR
+        reports_folder.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = _resolve_report_filename(employee, timestamp)

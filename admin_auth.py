@@ -34,6 +34,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Callable, Dict, Optional
 
+from app_paths import CONFIG_PATH
 from logger import get_logger
 from settings import SettingsWindow
 
@@ -42,8 +43,6 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-
-CONFIG_PATH: Path = Path(__file__).resolve().parent / "config.json"
 
 DIALOG_TITLE: str = "Administrator Authentication"
 DIALOG_WIDTH: int = 360

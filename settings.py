@@ -26,6 +26,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, Optional
 
+from app_paths import CONFIG_PATH
 from logger import get_logger
 
 
@@ -34,8 +35,6 @@ from logger import get_logger
 # ============================================================
 
 logger = get_logger(__name__)
-
-CONFIG_PATH = Path(__file__).parent / "config.json"
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "idle_threshold": 5,
